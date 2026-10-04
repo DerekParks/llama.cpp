@@ -83,26 +83,68 @@ json format_error_response(const std::string & message, const enum error_type ty
 // cache splice
 //
 
+server_splice_params server_splice_resolve(const common_cache_splice & raw) {
+    static const server_splice_params levels[] = {
+        //  n_spans, n_min, n_tail, n_head, n_moves, n_common, carry
+        {         0,    64,     16,      0,       0,     1024, false },
+        {         1,    64,     16,     16,       1,     1024, false },
+        {         6,    64,     16,      0,       4,     1024, false },
+        { INT32_MAX,    32,      8,      0,       0,      256, false },
+        { INT32_MAX,    16,      4,      0,       0,        1, true  },
+    };
+
+    if (raw.level < 0 && raw.n_spans < 0) {
+        return levels[0];
+    }
+
+    server_splice_params res = levels[std::clamp(raw.level < 0 ? 2 : raw.level, 0, 4)];
+
+    if (raw.n_spans  >= 0) { res.n_spans  = raw.n_spans;  }
+    if (raw.n_min    >= 0) { res.n_min    = std::max(1, raw.n_min); }
+    if (raw.n_tail   >= 0) { res.n_tail   = std::max(1, raw.n_tail); }
+    if (raw.n_head   >= 0) { res.n_head   = raw.n_head;   }
+    if (raw.n_moves  >= 0) { res.n_moves  = raw.n_moves;  }
+    if (raw.n_common >= 0) { res.n_common = std::max(1, raw.n_common); }
+    if (raw.carry    >= 0) { res.carry    = raw.carry != 0; }
+
+    return res;
+}
+
 std::vector<server_splice_span> server_splice_plan(
         const llama_tokens & cached,
         const llama_tokens & prompt,
         size_t n_common,
-        int32_t n_max) {
-    constexpr size_t  n_gram = 16;
-    constexpr int32_t n_min  = SERVER_SPLICE_N_MIN + SERVER_SPLICE_N_TAIL;
+        const server_splice_params & params,
+        const std::vector<uint8_t> & moves) {
+    // a run has to hold its head, the moved part and its tail
+    const size_t n_run  = (size_t) params.n_head + params.n_min + params.n_tail;
+    const size_t n_gram = std::min<size_t>(16, n_run);
 
     std::vector<server_splice_span> res;
 
-    if (n_max <= 0 || n_common < SERVER_SPLICE_N_COMMON_MIN || cached.size() < n_common + n_min || prompt.size() < n_common + n_min) {
+    if (params.n_spans <= 0 || n_common < (size_t) params.n_common || cached.size() < n_common + n_run || prompt.size() < n_common + n_run) {
         return res;
     }
 
-    const auto hash = [](const llama_tokens & tokens, size_t i) {
+    const auto hash = [n_gram](const llama_tokens & tokens, size_t i) {
         uint64_t h = 1469598103934665603ull;
         for (size_t k = 0; k < n_gram; k++) {
             h = (h ^ (uint32_t) tokens[i + k]) * 1099511628211ull;
         }
         return h;
+    };
+
+    // whether no token of the moved part has used up its moves
+    const auto can_move = [&](size_t i, size_t n) {
+        if (params.n_moves <= 0) {
+            return true;
+        }
+        for (size_t k = i; k < i + n && k < moves.size(); k++) {
+            if (moves[k] >= params.n_moves) {
+                return false;
+            }
+        }
+        return true;
     };
 
     // start positions of every n-gram of the cached prompt, in increasing order
@@ -112,7 +154,7 @@ std::vector<server_splice_span> server_splice_plan(
     }
 
     size_t i_min = n_common;
-    for (size_t j = n_common; j + n_min <= prompt.size(); ) {
+    for (size_t j = n_common; j + n_run <= prompt.size(); ) {
         int32_t best_i = -1;
         int32_t best_n = 0;
 
@@ -132,8 +174,11 @@ std::vector<server_splice_span> server_splice_plan(
             }
         }
 
-        if (best_n >= n_min) {
-            res.push_back({ best_i, (int32_t) j, best_n - SERVER_SPLICE_N_TAIL });
+        if (best_n >= (int32_t) n_run) {
+            const int32_t n_moved = best_n - params.n_head - params.n_tail;
+            if (can_move(best_i + params.n_head, n_moved)) {
+                res.push_back({ best_i + params.n_head, (int32_t) j + params.n_head, n_moved });
+            }
             i_min = best_i + best_n;
             j    += best_n;
         } else {
@@ -141,10 +186,10 @@ std::vector<server_splice_span> server_splice_plan(
         }
     }
 
-    if (res.size() > (size_t) n_max) {
+    if (res.size() > (size_t) params.n_spans) {
         std::vector<server_splice_span> longest = res;
         std::stable_sort(longest.begin(), longest.end(), [](const auto & a, const auto & b) { return a.n > b.n; });
-        longest.resize(n_max);
+        longest.resize(params.n_spans);
         std::sort(longest.begin(), longest.end(), [](const auto & a, const auto & b) { return a.pos_new < b.pos_new; });
         res = std::move(longest);
     }

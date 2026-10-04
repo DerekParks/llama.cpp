@@ -114,6 +114,7 @@ class ServerProcess:
     sleep_idle_seconds: int | None = None
     cache_ram: int | None = None
     cache_splice: int | None = None
+    cache_splice_level: int | None = None
     ctx_checkpoints: int | None = None
     checkpoint_min_step: int | None = None
     checkpoint_path: str | None = None
@@ -284,6 +285,8 @@ class ServerProcess:
             server_args.extend(["--cache-ram", self.cache_ram])
         if self.cache_splice is not None:
             server_args.extend(["--cache-splice", self.cache_splice])
+        if self.cache_splice_level is not None:
+            server_args.extend(["--cache-splice-level", self.cache_splice_level])
         if self.ctx_checkpoints is not None:
             server_args.extend(["--ctx-checkpoints", self.ctx_checkpoints])
         if self.checkpoint_min_step is not None:

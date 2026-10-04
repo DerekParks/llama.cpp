@@ -3410,6 +3410,10 @@ private:
                         // the prefix shared with the cached prompt, or -1 when the cache is not used
                         int n_common = -1;
 
+                        server_splice_params            splice_params;
+                        std::vector<server_splice_span> splice_plan;
+                        bool                            splice_carry = false;
+
                         // empty prompt passed -> release the slot and send empty response
                         if (input_tokens.empty()) {
                             SLT_WRN(slot, "%s", "empty prompt - releasing slot\n");
@@ -3564,6 +3568,22 @@ private:
                                 }
                             }
 
+                            // cached spans that the new prompt has further along, to be moved to their new place.
+                            // skipping a span needs a recurrent state to continue from, and no draft context to keep in step
+                            if (n_common >= 0 &&
+                                    ctx_dft == nullptr &&
+                                    ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART &&
+                                    !slot.prompt.tokens.has_mtmd &&
+                                    !input_tokens.has_mtmd) {
+                                splice_params = server_splice_resolve(slot.task->params.cache_splice);
+                                splice_plan   = server_splice_plan(slot.prompt.tokens.get_tokens(), input_tokens.get_tokens(), n_common, splice_params, slot.prompt.splice_moves);
+                            }
+
+                            // keeping the recurrent state as it is leaves nothing to roll back, so the whole common prefix stays
+                            if (!splice_plan.empty() && splice_params.carry && n_past == n_common) {
+                                splice_carry = llama_memory_seq_rs_pos_set(llama_get_memory(ctx_tgt), slot.id, n_common - 1);
+                            }
+
                             llama_pos pos_next = slot.prompt.tokens.pos_next(n_past);
 
                             // ref: https://github.com/ggml-org/llama.cpp/pull/24110
@@ -3688,36 +3708,38 @@ private:
                         // a checkpoint there lets the next edit at the same place keep the whole shared prefix
                         slot.prompt.n_branch = n_common > n_past && n_common < slot.task->n_tokens() ? n_common : -1;
 
-                        // keep cached spans that the new prompt has further along, moved to their new place
-                        {
-                            const auto n_cache_splice = slot.task->params.n_cache_splice;
+                        // move the planned spans; without the carried state, the first one continues from the previous prompt's end
+                        slot.prompt.splice_carry = splice_carry;
+                        if (!splice_plan.empty() && (splice_carry || !slot.prompt.ckpt_prompt_end.empty())) {
+                            std::vector<llama_memory_span> moves;
+                            for (const auto & span : splice_plan) {
+                                moves.push_back({ span.pos_old, span.pos_old + span.n, span.pos_new - span.pos_old });
+                            }
 
-                            // skipping a span needs a recurrent state to continue from, and no draft context to keep in step
-                            const bool can_cache_splice =
-                                n_common >= 0 &&
-                                ctx_dft == nullptr &&
-                                ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART &&
-                                !slot.prompt.ckpt_prompt_end.empty() &&
-                                !slot.prompt.tokens.has_mtmd &&
-                                !input_tokens.has_mtmd;
-
-                            if (can_cache_splice && n_cache_splice > 0) {
-                                const auto spans = server_splice_plan(slot.prompt.tokens.get_tokens(), input_tokens.get_tokens(), n_common, n_cache_splice);
-
-                                std::vector<llama_memory_span> moves;
-                                for (const auto & span : spans) {
-                                    moves.push_back({ span.pos_old, span.pos_old + span.n, span.pos_new - span.pos_old });
+                            if (llama_memory_seq_splice(llama_get_memory(ctx_tgt), slot.id, n_past, moves.data(), moves.size())) {
+                                slot.prompt.splice = splice_plan;
+                                for (const auto & span : splice_plan) {
+                                    SLT_TRC(slot, "keeping cached span of %d tokens, moving [%d, %d) -> [%d, %d)\n", span.n, span.pos_old, span.pos_old + span.n, span.pos_new, span.pos_new + span.n);
                                 }
+                            } else {
+                                SLT_WRN(slot, "%s", "cache splice is not supported by this context\n");
+                                if (splice_carry) {
+                                    // the recurrent state no longer belongs to any position of the prompt
+                                    slot.prompt_clear();
+                                    n_past = 0;
+                                }
+                            }
+                        }
 
-                                if (spans.empty()) {
-                                    SLT_DBG(slot, "cache splice found no span to keep, n_common = %d\n", n_common);
-                                } else if (llama_memory_seq_splice(llama_get_memory(ctx_tgt), slot.id, n_past, moves.data(), moves.size())) {
-                                    slot.prompt.splice = spans;
-                                    for (const auto & span : spans) {
-                                        SLT_TRC(slot, "keeping cached span of %d tokens, moving [%d, %d) -> [%d, %d)\n", span.n, span.pos_old, span.pos_old + span.n, span.pos_new, span.pos_new + span.n);
-                                    }
-                                } else {
-                                    SLT_WRN(slot, "cache splice is not supported by this context - ignoring n_cache_splice = %d\n", n_cache_splice);
+                        // the moved tokens have one more move behind them, all others are processed in this prompt
+                        {
+                            const auto moves_old = std::move(slot.prompt.splice_moves);
+                            slot.prompt.splice_moves.assign(slot.prompt.splice.empty() ? 0 : slot.task->n_tokens(), 0);
+                            for (const auto & span : slot.prompt.splice) {
+                                for (int32_t i = 0; i < span.n; i++) {
+                                    const size_t  i_old = span.pos_old + i;
+                                    const uint8_t n_old = i_old < moves_old.size() ? moves_old[i_old] : 0;
+                                    slot.prompt.splice_moves[span.pos_new + i] = n_old < UINT8_MAX ? n_old + 1 : n_old;
                                 }
                             }
                         }
@@ -3881,7 +3903,7 @@ private:
                         const auto & span = slot.prompt.splice[slot.prompt.splice_next];
 
                         // the tokens after the first span continue from the state the previous prompt ended in
-                        if (slot.prompt.splice_next == 0) {
+                        if (slot.prompt.splice_next == 0 && !slot.prompt.splice_carry) {
                             slot.prompt.ckpt_prompt_end.load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                         }
 
@@ -4264,7 +4286,8 @@ private:
                 slot.state = SLOT_STATE_GENERATING;
 
                 // the state a cache splice of the next prompt continues from
-                if (params_base.n_cache_splice > 0 && slot.ctx_dft == nullptr && !slot.prompt.tokens.has_mtmd) {
+                if ((server_splice_resolve(params_base.cache_splice).n_spans > 0 || server_splice_resolve(slot.task->params.cache_splice).n_spans > 0) &&
+                        slot.ctx_dft == nullptr && !slot.prompt.tokens.has_mtmd) {
                     auto & ckpt = slot.prompt.ckpt_prompt_end;
                     ckpt.update_pos(
                             slot.prompt.n_tokens(),

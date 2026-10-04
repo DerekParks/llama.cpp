@@ -68,9 +68,37 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
         ->set_hard_limits(0, INT32_MAX)
         ->set_desc("Min chunk size to attempt reusing from the cache via KV shifting. See --cache-reuse arg"));
 
-    add((new field_num("n_cache_splice", params.n_cache_splice))
-        ->set_hard_limits(0, INT32_MAX)
-        ->set_desc("Max cached spans to move to their new place after an edit in the middle of the prompt. See --cache-splice arg"));
+    add((new field_num("cache_splice_level", params.cache_splice.level))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("Level of --cache-splice-level, 0 to 4 (-1 = default)"));
+
+    add((new field_num("n_cache_splice", params.cache_splice.n_spans))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("Max cached spans to move to their new place after an edit. See --cache-splice arg (-1 = default)"));
+
+    add((new field_num("n_cache_splice_min", params.cache_splice.n_min))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("See --cache-splice-min arg (-1 = default)"));
+
+    add((new field_num("n_cache_splice_tail", params.cache_splice.n_tail))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("See --cache-splice-tail arg (-1 = default)"));
+
+    add((new field_num("n_cache_splice_head", params.cache_splice.n_head))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("See --cache-splice-head arg (-1 = default)"));
+
+    add((new field_num("n_cache_splice_moves", params.cache_splice.n_moves))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("See --cache-splice-moves arg (-1 = default)"));
+
+    add((new field_num("n_cache_splice_common", params.cache_splice.n_common))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("See --cache-splice-common arg (-1 = default)"));
+
+    add((new field_num("cache_splice_carry", params.cache_splice.carry))
+        ->set_hard_limits(-1, INT32_MAX)
+        ->set_desc("See --cache-splice-carry arg, 0 or 1 (-1 = default)"));
 
     // TODO: implement t_max_prompt_ms
     // add((new field_num("t_max_prompt_ms", params.t_max_prompt_ms))
@@ -533,7 +561,7 @@ task_params eval_llama_cmpl_schema(
     params.n_keep        = params_base.n_keep;
     params.n_predict     = params_base.n_predict;
     params.n_cache_reuse = params_base.n_cache_reuse;
-    params.n_cache_splice = params_base.n_cache_splice;
+    params.cache_splice  = params_base.cache_splice;
     params.cache_prompt  = params_base.cache_prompt;
     params.antiprompt    = params_base.antiprompt;
     params.sse_ping_interval = params_base.sse_ping_interval;

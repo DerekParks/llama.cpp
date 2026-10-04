@@ -367,6 +367,11 @@ bool llama_memory_recurrent::seq_rs_pos_set(llama_seq_id seq_id, llama_pos pos) 
         return false;
     }
 
+    // a pending rollback would replace the state this position is given to
+    if ((size_t) seq_id < rs_idx.size()) {
+        set_rs_idx(seq_id, 0);
+    }
+
     cells[tail_id].pos = pos;
 
     return true;

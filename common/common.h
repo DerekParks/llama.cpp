@@ -451,6 +451,18 @@ struct lr_opt {
 
 struct ggml_opt_optimizer_params common_opt_lr_pars(void * userdata);
 
+// settings for moving cached spans to their new place after an edit; -1 takes the value from the level
+struct common_cache_splice {
+    int32_t level    = -1; // 0 = off, 1 = careful ... 4 = fastest and least accurate; -1 = 2 once n_spans is set
+    int32_t n_spans  = -1; // max spans to move (0 = disabled)
+    int32_t n_min    = -1; // min tokens of a span that are moved
+    int32_t n_tail   = -1; // tokens at the end of a span that are processed again
+    int32_t n_head   = -1; // tokens at the start of a span that are processed again
+    int32_t n_moves  = -1; // times a token may be moved before it is processed again (0 = no limit)
+    int32_t n_common = -1; // min common prefix; a shorter one is processed in full
+    int32_t carry    = -1; // 1 = keep the recurrent state as it is instead of rolling it back
+};
+
 struct common_params {
     int32_t n_predict             =    -1; // max. number of new tokens to predict, -1 == no limit
     int32_t n_ctx                 =     0; // context size, 0 == context the model was trained with
@@ -631,7 +643,7 @@ struct common_params {
     int32_t sse_ping_interval   = 30;            // SSE ping interval in seconds
     int32_t n_threads_http      = -1;    // number of threads to process HTTP requests (TODO: support threadpool)
     int32_t n_cache_reuse       = 0;     // min chunk size to reuse from the cache via KV shifting
-    int32_t n_cache_splice      = 0;     // max cached spans to move to their new place after an edit (0 = disabled)
+    common_cache_splice cache_splice;    // moving cached spans to their new place after an edit
     bool    cache_prompt        = true;  // whether to enable prompt caching
     bool    cache_idle_slots    = true;  // save and clear idle slots upon starting a new task
     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot

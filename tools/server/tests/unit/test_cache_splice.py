@@ -87,6 +87,45 @@ def test_edit_near_the_start_is_processed_in_full():
     assert edited["splice_n"] == 0
 
 
+OTHER = prompt("NOTE: the valve code will change again tomorrow, so ask before using it.")
+
+
+@pytest.mark.slow
+def test_level_1_moves_a_span_once_and_processes_both_of_its_ends():
+    server.cache_splice = None
+    server.cache_splice_level = 1
+    server.start()
+    complete(OLD)
+    edited = complete(NEW)
+    assert edited["splice_n"] > n_tokens(TAIL) // 2
+
+    # the same edit at level 2 leaves the first 16 tokens of the span where they are
+    complete(OLD, cache_splice_level=0)
+    level_2 = complete(NEW, cache_splice_level=2)
+    assert edited["splice_n"] == level_2["splice_n"] - 16
+
+    # a span that was moved is processed again at level 1, which makes it movable once more
+    assert complete(OTHER, cache_splice_level=1)["splice_n"] == 0
+    assert complete(NEW, cache_splice_level=1)["splice_n"] > n_tokens(TAIL) // 2
+
+    # level 2 moves a span that was moved before
+    assert complete(OTHER, cache_splice_level=2)["splice_n"] > n_tokens(TAIL) // 2
+
+
+@pytest.mark.slow
+def test_level_4_processes_nothing_before_the_edit():
+    server.cache_splice = None
+    server.cache_splice_level = 4
+    # no checkpoint lies before the edit, so rolling back would mean starting over
+    server.checkpoint_min_step = None
+    server.start()
+    complete(OLD)
+    edited = complete(NEW)
+    assert edited["cache_n"] >= n_tokens(HEAD)
+    assert edited["splice_n"] > n_tokens(TAIL) // 2
+    assert edited["cache_n"] + edited["splice_n"] + edited["prompt_n"] == n_tokens(NEW)
+
+
 @pytest.mark.slow
 def test_request_can_turn_splice_off():
     server.start()

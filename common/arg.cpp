@@ -3617,17 +3617,70 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_REUSE"));
     add_opt(common_arg(
-        {"--cache-splice"}, "N",
-        string_format(
-            "max number of cached spans to keep after an edit in the middle of the prompt, by moving them to their new place "
-            "instead of processing them again; their content is not updated for the edit, and edits in the first 1024 tokens are processed in full; "
-            "requires prompt caching to be enabled (default: %d, 0 = disabled)",
-            params.n_cache_splice
-        ),
+        {"--cache-splice-level"}, "N",
+        "after an edit in the middle of the prompt, keep cached spans that the new prompt has further along by moving them "
+        "to their new place instead of processing them again; their content is not updated for the edit\n"
+        "0 = off, 1 = one span that was never moved before, with both of its ends processed again, "
+        "2 = up to 6 spans, each moved at most 4 times, 3 = any number of shorter spans, "
+        "4 = as 3, and the recurrent state is not rolled back, so nothing before the edit is processed again\n"
+        "requires prompt caching to be enabled (default: off)",
         [](common_params & params, int value) {
-            params.n_cache_splice = value;
+            if (value < 0 || value > 4) {
+                throw std::invalid_argument("cache-splice-level must be in [0, 4]");
+            }
+            params.cache_splice.level = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE_LEVEL"));
+    add_opt(common_arg(
+        {"--cache-splice"}, "N",
+        "max number of cached spans to move, see --cache-splice-level (default: from the level, level 2 if none is given, 0 = disabled)",
+        [](common_params & params, int value) {
+            params.cache_splice.n_spans = value;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE"));
+    add_opt(common_arg(
+        {"--cache-splice-min"}, "N",
+        "min number of tokens of a span that are moved (default: from the level)",
+        [](common_params & params, int value) {
+            params.cache_splice.n_min = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE_MIN"));
+    add_opt(common_arg(
+        {"--cache-splice-tail"}, "N",
+        "number of tokens at the end of a span that are processed again (default: from the level)",
+        [](common_params & params, int value) {
+            params.cache_splice.n_tail = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE_TAIL"));
+    add_opt(common_arg(
+        {"--cache-splice-head"}, "N",
+        "number of tokens at the start of a span that are processed again (default: from the level)",
+        [](common_params & params, int value) {
+            params.cache_splice.n_head = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE_HEAD"));
+    add_opt(common_arg(
+        {"--cache-splice-moves"}, "N",
+        "number of times a token may be moved before it is processed again (default: from the level, 0 = no limit)",
+        [](common_params & params, int value) {
+            params.cache_splice.n_moves = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE_MOVES"));
+    add_opt(common_arg(
+        {"--cache-splice-common"}, "N",
+        "min number of unchanged tokens at the start of the prompt; after an earlier edit nothing is moved (default: from the level)",
+        [](common_params & params, int value) {
+            params.cache_splice.n_common = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE_COMMON"));
+    add_opt(common_arg(
+        {"--cache-splice-carry"},
+        {"--no-cache-splice-carry"},
+        "keep the recurrent state as it is instead of rolling it back to the edit (default: from the level)",
+        [](common_params & params, bool value) {
+            params.cache_splice.carry = value ? 1 : 0;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE_CARRY"));
     add_opt(common_arg(
         {"--metrics"},
         string_format("enable prometheus compatible metrics endpoint (default: %s)", params.endpoint_metrics ? "enabled" : "disabled"),

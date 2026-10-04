@@ -382,22 +382,29 @@ struct server_splice_span {
     int32_t n;
 };
 
-// tokens at the end of a matching run that are processed again, not moved
-constexpr int32_t SERVER_SPLICE_N_TAIL = 16;
+// how spans are chosen and what is done around them
+struct server_splice_params {
+    int32_t n_spans  = 0;
+    int32_t n_min    = 64;
+    int32_t n_tail   = 16;
+    int32_t n_head   = 0;
+    int32_t n_moves  = 0;
+    int32_t n_common = 1024;
+    bool    carry    = false;
+};
 
-// shortest part of a matching run worth moving
-constexpr int32_t SERVER_SPLICE_N_MIN = 64;
+// the settings of a level, with every value that is set in `raw` taking its place
+server_splice_params server_splice_resolve(const common_cache_splice & raw);
 
-// shortest common prefix after which runs are moved; an edit this early changes what everything after it means
-constexpr size_t SERVER_SPLICE_N_COMMON_MIN = 1024;
-
-// the longest `n_max` runs shared by both prompts after their common prefix `n_common`,
-// in prompt order, each without its tail; a run keeps the order it has in both prompts
+// the longest `params.n_spans` runs shared by both prompts after their common prefix `n_common`,
+// in prompt order, each without its head and tail; a run keeps the order it has in both prompts.
+// `moves` counts how often each cached token has been moved, with missing entries counting as 0
 std::vector<server_splice_span> server_splice_plan(
         const llama_tokens & cached,
         const llama_tokens & prompt,
         size_t n_common,
-        int32_t n_max);
+        const server_splice_params & params,
+        const std::vector<uint8_t> & moves);
 
 //
 // stats and metrics
