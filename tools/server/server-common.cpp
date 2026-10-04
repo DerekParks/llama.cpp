@@ -9,7 +9,9 @@
 
 #include "server-common.h"
 
+#include <algorithm>
 #include <random>
+#include <unordered_map>
 #include <sstream>
 #include <fstream>
 #include <limits>
@@ -78,12 +80,86 @@ json format_error_response(const std::string & message, const enum error_type ty
 }
 
 //
+// cache splice
+//
+
+std::vector<server_splice_span> server_splice_plan(
+        const llama_tokens & cached,
+        const llama_tokens & prompt,
+        size_t n_common,
+        int32_t n_max) {
+    constexpr size_t  n_gram = 16;
+    constexpr int32_t n_min  = SERVER_SPLICE_N_MIN + SERVER_SPLICE_N_TAIL;
+
+    std::vector<server_splice_span> res;
+
+    if (n_max <= 0 || cached.size() < n_common + n_min || prompt.size() < n_common + n_min) {
+        return res;
+    }
+
+    const auto hash = [](const llama_tokens & tokens, size_t i) {
+        uint64_t h = 1469598103934665603ull;
+        for (size_t k = 0; k < n_gram; k++) {
+            h = (h ^ (uint32_t) tokens[i + k]) * 1099511628211ull;
+        }
+        return h;
+    };
+
+    // start positions of every n-gram of the cached prompt, in increasing order
+    std::unordered_map<uint64_t, std::vector<int32_t>> index;
+    for (size_t i = n_common; i + n_gram <= cached.size(); i++) {
+        index[hash(cached, i)].push_back((int32_t) i);
+    }
+
+    size_t i_min = n_common;
+    for (size_t j = n_common; j + n_min <= prompt.size(); ) {
+        int32_t best_i = -1;
+        int32_t best_n = 0;
+
+        const auto it = index.find(hash(prompt, j));
+        if (it != index.end()) {
+            const auto & starts = it->second;
+            for (auto s = std::lower_bound(starts.begin(), starts.end(), (int32_t) i_min); s != starts.end(); ++s) {
+                const size_t i = *s;
+                size_t n = 0;
+                while (i + n < cached.size() && j + n < prompt.size() && cached[i + n] == prompt[j + n]) {
+                    n++;
+                }
+                if ((int32_t) n > best_n) {
+                    best_i = (int32_t) i;
+                    best_n = (int32_t) n;
+                }
+            }
+        }
+
+        if (best_n >= n_min) {
+            res.push_back({ best_i, (int32_t) j, best_n - SERVER_SPLICE_N_TAIL });
+            i_min = best_i + best_n;
+            j    += best_n;
+        } else {
+            j++;
+        }
+    }
+
+    if (res.size() > (size_t) n_max) {
+        std::vector<server_splice_span> longest = res;
+        std::stable_sort(longest.begin(), longest.end(), [](const auto & a, const auto & b) { return a.n > b.n; });
+        longest.resize(n_max);
+        std::sort(longest.begin(), longest.end(), [](const auto & a, const auto & b) { return a.pos_new < b.pos_new; });
+        res = std::move(longest);
+    }
+
+    return res;
+}
+
+//
 // server_slot_stats
 //
 
 json server_slot_stats::to_json() const {
     json base = {
         {"cache_n",                n_prompt_cached},
+        {"splice_n",               n_prompt_spliced},
 
         {"prompt_n",               n_prompt_processed},
         {"prompt_ms",              t_prompt_ms()},

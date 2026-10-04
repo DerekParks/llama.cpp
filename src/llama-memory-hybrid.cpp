@@ -165,7 +165,16 @@ void llama_memory_hybrid::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p
 }
 
 bool llama_memory_hybrid::seq_splice(llama_seq_id seq_id, llama_pos p_keep, const llama_memory_span * spans, size_t n_spans) {
-    return mem_attn->seq_splice(seq_id, p_keep, spans, n_spans);
+    if (!mem_attn->seq_splice(seq_id, p_keep, spans, n_spans)) {
+        return false;
+    }
+
+    // with no prefix kept, the sequence starts over
+    if (p_keep == 0) {
+        mem_recr->seq_rm(seq_id, -1, -1);
+    }
+
+    return true;
 }
 
 bool llama_memory_hybrid::seq_rs_pos_set(llama_seq_id seq_id, llama_pos pos) {

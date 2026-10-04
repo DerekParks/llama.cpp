@@ -372,6 +372,31 @@ json format_response_rerank(
         int top_n);
 
 //
+// cache splice
+//
+
+// a run of n tokens found at pos_old in the cached prompt and at pos_new in the new one
+struct server_splice_span {
+    int32_t pos_old;
+    int32_t pos_new;
+    int32_t n;
+};
+
+// tokens at the end of a matching run that are processed again, not moved
+constexpr int32_t SERVER_SPLICE_N_TAIL = 16;
+
+// shortest part of a matching run worth moving
+constexpr int32_t SERVER_SPLICE_N_MIN = 64;
+
+// the longest `n_max` runs shared by both prompts after their common prefix `n_common`,
+// in prompt order, each without its tail; a run keeps the order it has in both prompts
+std::vector<server_splice_span> server_splice_plan(
+        const llama_tokens & cached,
+        const llama_tokens & prompt,
+        size_t n_common,
+        int32_t n_max);
+
+//
 // stats and metrics
 //
 
@@ -379,6 +404,7 @@ json format_response_rerank(
 struct server_slot_stats {
     uint64_t n_prompt_cached    = 0;
     uint64_t n_prompt_processed = 0;
+    uint64_t n_prompt_spliced   = 0; // cached tokens moved to a new place, not counted in n_prompt_cached
     uint64_t n_gen              = 0;
 
     // speculative decoding stats

@@ -106,13 +106,25 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    // a splice that keeps no prefix clears the recurrent state, so carry it across
+    std::vector<uint8_t> rs(llama_state_seq_get_size_ext(ctx, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY));
+    llama_state_seq_get_data_ext(ctx, rs.data(), rs.size(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+
     const llama_memory_span all[] = {{0, (llama_pos) n - 1, shift}};
     if (!llama_memory_seq_splice(mem, 0, 0, all, 1)) {
         fprintf(stderr, "%s : FAILED - splice was rejected\n", __func__);
         return 1;
     }
-    // only hybrid and recurrent memory has a recurrent position to move
-    llama_memory_seq_rs_pos_set(mem, 0, (llama_pos) n - 2 + shift);
+
+    // only hybrid memory has a recurrent state next to the moved cells
+    const bool has_rs = llama_memory_seq_pos_max(mem, 0) == -1;
+    if (has_rs) {
+        llama_state_seq_set_data_ext(ctx, rs.data(), rs.size(), 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        if (!llama_memory_seq_rs_pos_set(mem, 0, (llama_pos) n - 2 + shift)) {
+            fprintf(stderr, "%s : FAILED - could not move the recurrent state\n", __func__);
+            return 1;
+        }
+    }
 
     // hybrid memory reports the recurrent position as its minimum
     if (llama_memory_seq_pos_min(mem, 0) < shift || llama_memory_seq_pos_max(mem, 0) != (llama_pos) n - 2 + shift) {
@@ -136,34 +148,31 @@ int main(int argc, char ** argv) {
     }
 
     // remove a hole and refill it while later cells stay cached
-    const llama_pos a = (llama_pos) n / 3;
-    const llama_pos b = (llama_pos) n / 2;
-    const llama_memory_span tail[] = {{b + shift, (llama_pos) n + shift, -shift}};
-    if (!llama_memory_seq_splice(mem, 0, 0, all, 0)) {
-        return 1;
-    }
-    if (llama_memory_seq_pos_max(mem, 0) != -1 && llama_memory_seq_rs_pos_set(mem, 0, 0)) {
-        // hybrid memory: attention cells are gone, the recurrent state stays
-    }
-    llama_memory_clear(mem, true);
-    if (!decode(ctx, tokens, 0, n, shift, false)) {
-        return 1;
-    }
-    const llama_memory_span head_and_tail[] = {{shift, a + shift, -shift}, tail[0]};
-    if (!llama_memory_seq_splice(mem, 0, 0, head_and_tail, 2)) {
-        fprintf(stderr, "%s : FAILED - two-span splice was rejected\n", __func__);
-        return 1;
-    }
-    if (llama_memory_seq_rs_pos_set(mem, 0, a - 1)) {
-        if (!decode(ctx, tokens, a, b, a, false)) {
+    if (has_rs) {
+        const llama_pos a = (llama_pos) n / 3;
+        const llama_pos b = (llama_pos) n / 2;
+
+        llama_memory_clear(mem, true);
+        if (!decode(ctx, tokens, 0, n, 0, false)) {
+            return 1;
+        }
+
+        const llama_memory_span tail[] = {{b, (llama_pos) n, 0}};
+        if (!llama_memory_seq_splice(mem, 0, a, tail, 1)) {
+            fprintf(stderr, "%s : FAILED - splice with a hole was rejected\n", __func__);
+            return 1;
+        }
+
+        if (!llama_memory_seq_rs_pos_set(mem, 0, a - 1) || !decode(ctx, tokens, a, b, a, false)) {
             fprintf(stderr, "%s : FAILED - could not refill the hole\n", __func__);
             return 1;
         }
-        llama_memory_seq_rs_pos_set(mem, 0, (llama_pos) n - 1);
-        if (!decode(ctx, tokens, n - 1, n, (llama_pos) n, true)) {
+
+        if (!llama_memory_seq_rs_pos_set(mem, 0, (llama_pos) n - 1) || !decode(ctx, tokens, n - 1, n, (llama_pos) n, true)) {
             fprintf(stderr, "%s : FAILED - could not decode after refilling the hole\n", __func__);
             return 1;
         }
+
         fprintf(stderr, "%s : refilled a hole of %d tokens under %zu cached later tokens\n", __func__, b - a, n - b);
     }
 

@@ -64,6 +64,7 @@ struct task_params {
     int32_t n_cmpl    =  1; // number of completions to generate from this prompt
 
     int32_t n_cache_reuse = 0; // min chunk size to attempt reusing from the cache via KV shifting (0 = disabled)
+    int32_t n_cache_splice = 0; // max cached spans to move to their new place after an edit (0 = disabled)
 
     int64_t t_max_prompt_ms  = -1; // TODO: implement
     int64_t t_max_predict_ms = -1; // if positive, limit the generation phase to this time limit
@@ -608,9 +609,23 @@ struct server_prompt {
 
     std::list<common_prompt_checkpoint> checkpoints;
 
+    // the state that cannot be rolled back, as it was when the last prompt had been processed
+    common_prompt_checkpoint ckpt_prompt_end;
+
+    // cached spans the current prompt still has to skip over, see server_splice_plan()
+    std::vector<server_splice_span> splice;
+    size_t                          splice_next = 0;
+
+    bool has_splice() const {
+        return splice_next < splice.size();
+    }
+
     void clear() {
         tokens.clear();
         checkpoints.clear();
+        ckpt_prompt_end.clear();
+        splice.clear();
+        splice_next = 0;
     }
 
     int n_tokens() const {
@@ -621,6 +636,9 @@ struct server_prompt {
         return server_prompt {
             tokens.clone(),
             checkpoints,
+            ckpt_prompt_end,
+            {},
+            0,
         };
     }
 };

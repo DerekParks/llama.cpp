@@ -3308,6 +3308,9 @@ private:
                         // keep track how many tokens we can reuse from the previous state
                         int n_past = 0;
 
+                        // the prefix shared with the cached prompt, or -1 when the cache is not used
+                        int n_common = -1;
+
                         // empty prompt passed -> release the slot and send empty response
                         if (input_tokens.empty()) {
                             SLT_WRN(slot, "%s", "empty prompt - releasing slot\n");
@@ -3376,6 +3379,7 @@ private:
                             if (slot.task->params.cache_prompt && !is_stateless_task) {
                                 // reuse any previously computed tokens that are common with the new prompt
                                 n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
+                                n_common = n_past;
 
                                 // the children start from the shared prefix, do not go past it
                                 if (slot.task->n_tokens_shared > 0) {
@@ -3570,8 +3574,46 @@ private:
                             SLT_WRN(slot, "n_past was set to %d\n", n_past);
                         }
 
+                        slot.prompt.splice.clear();
+                        slot.prompt.splice_next = 0;
+
+                        // keep cached spans that the new prompt has further along, moved to their new place
+                        {
+                            const auto n_cache_splice = slot.task->params.n_cache_splice;
+
+                            // skipping a span needs a recurrent state to continue from, and no draft context to keep in step
+                            const bool can_cache_splice =
+                                n_common >= 0 &&
+                                ctx_dft == nullptr &&
+                                ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART &&
+                                !slot.prompt.ckpt_prompt_end.empty() &&
+                                !slot.prompt.tokens.has_mtmd &&
+                                !input_tokens.has_mtmd;
+
+                            if (can_cache_splice && n_cache_splice > 0) {
+                                const auto spans = server_splice_plan(slot.prompt.tokens.get_tokens(), input_tokens.get_tokens(), n_common, n_cache_splice);
+
+                                std::vector<llama_memory_span> moves;
+                                for (const auto & span : spans) {
+                                    moves.push_back({ span.pos_old, span.pos_old + span.n, span.pos_new - span.pos_old });
+                                }
+
+                                if (spans.empty()) {
+                                    SLT_DBG(slot, "cache splice found no span to keep, n_common = %d\n", n_common);
+                                } else if (llama_memory_seq_splice(llama_get_memory(ctx_tgt), slot.id, n_past, moves.data(), moves.size())) {
+                                    slot.prompt.splice = spans;
+                                    for (const auto & span : spans) {
+                                        SLT_TRC(slot, "keeping cached span of %d tokens, moving [%d, %d) -> [%d, %d)\n", span.n, span.pos_old, span.pos_old + span.n, span.pos_new, span.pos_new + span.n);
+                                    }
+                                } else {
+                                    SLT_WRN(slot, "cache splice is not supported by this context - ignoring n_cache_splice = %d\n", n_cache_splice);
+                                }
+                            }
+                        }
+
                         slot.stats.n_prompt_cached    = n_past;
                         slot.stats.n_prompt_processed = 0;
+                        slot.stats.n_prompt_spliced   = 0;
 
                         metrics.add_prompt_cached(n_past);
 
@@ -3603,9 +3645,12 @@ private:
                     // truncate any tokens that are beyond n_past for this slot
                     const llama_pos p0 = slot.prompt.tokens.pos_next();
 
-                    SLT_TRC(slot, "cached n_tokens = %d, memory_seq_rm [%d, end)\n", slot.prompt.n_tokens(), p0);
+                    // spans kept by a cache splice lie beyond p0 until the prompt reaches them
+                    if (!slot.prompt.has_splice()) {
+                        SLT_TRC(slot, "cached n_tokens = %d, memory_seq_rm [%d, end)\n", slot.prompt.n_tokens(), p0);
 
-                    slot.mem.seq_rm(slot.id, p0, -1);
+                        slot.mem.seq_rm(slot.id, p0, -1);
+                    }
 
                     // shared prompt prefix: once it is processed, the children continue from it with their own prompt
                     bool wait_shared = false;
@@ -3704,12 +3749,41 @@ private:
 
                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
 
+                    // skip over a cached span that starts here; everything before it has been decoded by now
+                    while (slot.prompt.has_splice() && slot.prompt.splice[slot.prompt.splice_next].pos_new == slot.prompt.n_tokens()) {
+                        const auto & span = slot.prompt.splice[slot.prompt.splice_next];
+
+                        // the tokens after the first span continue from the state the previous prompt ended in
+                        if (slot.prompt.splice_next == 0) {
+                            slot.prompt.ckpt_prompt_end.load_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                        }
+
+                        for (int32_t i = 0; i < span.n; i++) {
+                            slot.prompt.tokens.push_back(input_tokens[span.pos_new + i]);
+                        }
+
+                        if (!llama_memory_seq_rs_pos_set(llama_get_memory(ctx_tgt), slot.id, slot.prompt.tokens.pos_next() - 1)) {
+                            SLT_ERR(slot, "failed to move the recurrent state past a cached span at %d\n", span.pos_new);
+                            send_error(slot, "failed to move the recurrent state past a cached span", ERROR_TYPE_SERVER);
+                            slot.release();
+                            return;
+                        }
+
+                        slot.stats.n_prompt_spliced += span.n;
+                        slot.prompt.splice_next++;
+                    }
+
                     // add prompt tokens for processing in the current batch
                     while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
                         // get next token to process
                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
                         if (cur_tok == LLAMA_TOKEN_NULL) {
                             break; // end of text chunk
+                        }
+
+                        // the tokens before a cached span are decoded before it is skipped
+                        if (slot.prompt.has_splice() && slot.prompt.splice[slot.prompt.splice_next].pos_new == slot.prompt.n_tokens()) {
+                            break;
                         }
 
                         // stop at the end of the shared prefix, the children are started from this state
@@ -4041,6 +4115,16 @@ private:
 
                 // prompt evaluated for next-token prediction
                 slot.state = SLOT_STATE_GENERATING;
+
+                // the state a cache splice of the next prompt continues from
+                if (params_base.n_cache_splice > 0 && slot.ctx_dft == nullptr && !slot.prompt.tokens.has_mtmd) {
+                    auto & ckpt = slot.prompt.ckpt_prompt_end;
+                    ckpt.update_pos(
+                            slot.prompt.n_tokens(),
+                            llama_memory_seq_pos_min(llama_get_memory(slot.ctx_tgt), slot.id),
+                            llama_memory_seq_pos_max(llama_get_memory(slot.ctx_tgt), slot.id));
+                    ckpt.update_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                }
 
                 if (slot.can_speculate()) {
                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());

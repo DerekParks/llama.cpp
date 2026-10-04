@@ -3596,6 +3596,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_REUSE"));
     add_opt(common_arg(
+        {"--cache-splice"}, "N",
+        string_format(
+            "max number of cached spans to keep after an edit in the middle of the prompt, by moving them to their new place "
+            "instead of processing them again; their content is not updated for the edit, requires prompt caching to be enabled (default: %d, 0 = disabled)",
+            params.n_cache_splice
+        ),
+        [](common_params & params, int value) {
+            params.n_cache_splice = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_SPLICE"));
+    add_opt(common_arg(
         {"--metrics"},
         string_format("enable prometheus compatible metrics endpoint (default: %s)", params.endpoint_metrics ? "enabled" : "disabled"),
         [](common_params & params) {

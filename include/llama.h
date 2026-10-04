@@ -798,7 +798,7 @@ extern "C" {
 
     // Keeps the tokens of the sequence with positions in [0, p_keep) and in the given spans, moving each span by its shift,
     // and removes the rest. Spans must be ordered and must not overlap, before or after moving.
-    // Only per-token memory (the KV cache) changes; recurrent state is left as it is.
+    // Only per-token memory (the KV cache) changes; recurrent state is left as it is, or cleared when p_keep is 0.
     // Returns false, changing nothing, if the memory does not support it or the spans are invalid
     LLAMA_API bool llama_memory_seq_splice(
             llama_memory_t mem,
