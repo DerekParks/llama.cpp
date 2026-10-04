@@ -2447,6 +2447,99 @@ private:
     }
 
     // n_tokens_cur: the number of tokens added to the batch for the current slot
+    // the file for a prompt's first n tokens as processed by this model
+    std::string system_cache_file(const server_tokens & tokens, int32_t n) const {
+        uint64_t h = 1469598103934665603ull;
+        const auto mix = [&h](uint64_t v) {
+            h = (h ^ v) * 1099511628211ull;
+        };
+        mix(llama_model_size(model_tgt));
+        mix(llama_model_n_params(model_tgt));
+        for (int32_t i = 0; i < n; i++) {
+            mix((uint32_t) tokens[i]);
+        }
+        const auto name = string_format("llama-system-%016" PRIx64 "-%d.bin", h, n);
+        return (std::filesystem::path(params_base.system_cache_path) / name).string();
+    }
+
+    // whether the part of this task's prompt before its first user message can be kept in the system cache
+    int32_t system_cache_n_tokens(const server_slot & slot) const {
+        if (params_base.system_cache_path.empty() || mctx != nullptr || slot.task->type != SERVER_TASK_TYPE_COMPLETION) {
+            return -1;
+        }
+        const int32_t n = slot.task->params.message_spans.first_user_message_pos();
+        return n > 0 && n < slot.task->n_tokens() ? n : -1;
+    }
+
+    // save the slot's memory, which holds exactly the first n tokens of its prompt
+    void system_cache_save(server_slot & slot, int32_t n) {
+        const auto path = system_cache_file(slot.prompt.tokens, n);
+        const auto path_tmp = path + ".tmp";
+
+        const auto & tokens = slot.prompt.tokens.get_tokens();
+        const size_t n_bytes = llama_state_seq_save_file(ctx_tgt, path_tmp.c_str(), slot.id, tokens.data(), n);
+
+        std::error_code ec;
+        if (n_bytes > 0) {
+            std::filesystem::rename(path_tmp, path, ec);
+        }
+        if (n_bytes == 0 || ec) {
+            std::filesystem::remove(path_tmp, ec);
+            SLT_WRN(slot, "failed to save the system prompt (%d tokens) to '%s'\n", n, path.c_str());
+            return;
+        }
+
+        SLT_INF(slot, "saved the system prompt (%d tokens, %.3f MiB) to '%s'\n", n, (float) n_bytes / 1024 / 1024, path.c_str());
+    }
+
+    // replace the slot's prompt with the saved first n tokens of the new one, if they were saved
+    bool system_cache_load(server_slot & slot, const server_tokens & input_tokens, int32_t n) {
+        const auto path = system_cache_file(input_tokens, n);
+        if (!std::filesystem::exists(path)) {
+            return false;
+        }
+
+        slot.prompt_clear();
+
+        llama_tokens tokens(n);
+        size_t n_loaded = 0;
+        size_t n_bytes  = 0;
+        try {
+            n_bytes = llama_state_seq_load_file(ctx_tgt, path.c_str(), slot.id, tokens.data(), tokens.size(), &n_loaded);
+        } catch (const std::exception & err) {
+            SLT_WRN(slot, "failed to load '%s': %s\n", path.c_str(), err.what());
+        }
+
+        bool ok = n_bytes > 0 && n_loaded == (size_t) n;
+        for (int32_t i = 0; ok && i < n; i++) {
+            ok = tokens[i] == input_tokens[i];
+        }
+        if (!ok) {
+            SLT_WRN(slot, "ignoring '%s': it does not hold the first %d tokens of the prompt\n", path.c_str(), n);
+            slot.prompt_clear();
+            return false;
+        }
+
+        slot.prompt.tokens = server_tokens(tokens, false);
+
+        // the state that cannot be rolled back to this point later has to be kept now
+        if (params_base.n_ctx_checkpoints > 0 && ctx_tgt_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART) {
+            auto & ckpt = slot.prompt.checkpoints.emplace_back();
+            ckpt.id_task = slot.task->id;
+            ckpt.update_pos(n,
+                    llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot.id),
+                    llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id));
+            ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+            if (!params_base.checkpoint_path.empty()) {
+                ckpt.offload_tgt(params_base.checkpoint_path);
+            }
+        }
+
+        SLT_INF(slot, "loaded the system prompt (%d tokens, %.3f MiB) from '%s'\n", n, (float) n_bytes / 1024 / 1024, path.c_str());
+
+        return true;
+    }
+
     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
         const int id_task = slot.task->id;
 
@@ -3462,6 +3555,15 @@ private:
                                 n_past = 0;
                             }
 
+                            // a slot that does not have this prompt's system prompt gets it from the system cache
+                            if (n_common >= 0 && !input_tokens.has_mtmd) {
+                                const int32_t n_system = system_cache_n_tokens(slot);
+                                if (n_system > 0 && n_past < n_system && system_cache_load(slot, input_tokens, n_system)) {
+                                    n_past   = n_system;
+                                    n_common = n_system;
+                                }
+                            }
+
                             llama_pos pos_next = slot.prompt.tokens.pos_next(n_past);
 
                             // ref: https://github.com/ggml-org/llama.cpp/pull/24110
@@ -3762,6 +3864,12 @@ private:
                         return n_tokens > (checkpoints.empty() ? 0 : checkpoints.back().n_tokens) + params_base.checkpoint_min_step;
                     };
 
+                    // where to end a batch so that the memory holds the system prompt alone, when it is not saved yet
+                    int32_t n_system_save = slot.prompt.tokens.has_mtmd ? -1 : system_cache_n_tokens(slot);
+                    if (n_system_save > 0 && std::filesystem::exists(system_cache_file(input_tokens, n_system_save))) {
+                        n_system_save = -1;
+                    }
+
                     // this batch gets a checkpoint of its own if it starts min step past the last one
                     const int64_t n_batch_start      = slot.prompt.n_tokens();
                     const bool    is_batch_past_step = is_past_min_step(n_batch_start);
@@ -3836,6 +3944,10 @@ private:
                         }
                         slot.prompt.tokens.push_back(cur_tok);
 
+                        if (slot.prompt.n_tokens() == n_system_save) {
+                            break;
+                        }
+
                         // break where the prompt leaves the cached one, and every min step in a long stretch without a checkpoint
                         if (do_checkpoint && (
                                     slot.prompt.n_tokens() == slot.prompt.n_branch ||
@@ -3881,6 +3993,11 @@ private:
                     const auto n_tokens_cur = batch.size() - n_tokens_prev;
 
                     const auto n_tokens_start = slot.prompt.n_tokens() - n_tokens_cur;
+
+                    // everything before this batch has been decoded and nothing after it is cached
+                    if (n_tokens_start == n_system_save && n_tokens_cur > 0 && !slot.prompt.has_splice()) {
+                        system_cache_save(slot, n_system_save);
+                    }
 
                     const bool near_prompt_end = slot.task->n_tokens() < slot.prompt.n_tokens() + n_ubatch;
 

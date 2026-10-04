@@ -144,6 +144,51 @@ def test_checkpoint_files_of_a_killed_server_are_removed_by_the_next(tmp_path):
     assert os.listdir(tmp_path) == []
 
 
+def chat(user: str) -> dict:
+    res = server.make_request("POST", "/chat/completions", data={
+        "messages": [
+            {"role": "system", "content": f"You answer questions about this log.\n{HEAD}"},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": 8,
+        "temperature": 0.0,
+        "cache_prompt": True,
+        "id_slot": 0,
+    })
+    assert res.status_code == 200
+    return res.body
+
+
+@pytest.mark.slow
+def test_system_prompt_is_loaded_after_a_restart(tmp_path):
+    global server
+    # message boundaries come from the chat template
+    server.jinja = True
+    server.system_cache_path = str(tmp_path)
+    server.start()
+    first = chat("Which station reported in entry 3?")
+    assert first["timings"]["cache_n"] == 0
+    saved = os.listdir(tmp_path)
+    assert len(saved) == 1
+    reference = chat("Which station reported in entry 7?")
+    server.stop()
+
+    server = hybrid()
+    server.jinja = True
+    server.system_cache_path = str(tmp_path)
+    server.start()
+    loaded = chat("Which station reported in entry 7?")
+    assert os.listdir(tmp_path) == saved
+    # everything before the user message came from the file
+    assert n_tokens(HEAD) < loaded["timings"]["cache_n"] == reference["timings"]["cache_n"]
+    assert loaded["timings"]["prompt_n"] == reference["timings"]["prompt_n"]
+    assert loaded["choices"][0]["message"]["content"] == reference["choices"][0]["message"]["content"]
+
+    # a later edit can still return to the end of the system prompt
+    again = chat("Which station reported in entry 9?")
+    assert again["timings"]["cache_n"] >= loaded["timings"]["cache_n"]
+
+
 def test_splice_is_ignored_without_recurrent_state():
     global server
     server = ServerPreset.tinyllama2()

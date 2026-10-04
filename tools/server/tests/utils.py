@@ -117,6 +117,7 @@ class ServerProcess:
     ctx_checkpoints: int | None = None
     checkpoint_min_step: int | None = None
     checkpoint_path: str | None = None
+    system_cache_path: str | None = None
     no_cache_idle_slots: bool = False
     log_path: str | None = None
     ui_mcp_proxy: bool = False
@@ -289,6 +290,8 @@ class ServerProcess:
             server_args.extend(["--checkpoint-min-step", self.checkpoint_min_step])
         if self.checkpoint_path:
             server_args.extend(["--checkpoint-path", self.checkpoint_path])
+        if self.system_cache_path:
+            server_args.extend(["--system-cache-path", self.system_cache_path])
         if self.no_cache_idle_slots:
             server_args.append("--no-cache-idle-slots")
         if self.ui_mcp_proxy:
