@@ -1265,6 +1265,9 @@ struct common_temp_file {
     common_temp_file & operator=(const common_temp_file &) = delete;
 };
 
+// claim `dir` for this process's checkpoint files and remove the files left by processes that no longer run
+void common_checkpoint_dir_init(const std::string & dir);
+
 struct common_prompt_checkpoint {
     int64_t n_tokens;
 

@@ -123,6 +123,27 @@ def test_checkpoints_on_disk_behave_like_checkpoints_in_memory(tmp_path):
     assert os.listdir(tmp_path) == []
 
 
+@pytest.mark.slow
+def test_checkpoint_files_of_a_killed_server_are_removed_by_the_next(tmp_path):
+    global server
+    server.checkpoint_path = str(tmp_path)
+    server.start()
+    complete(OLD)
+    server.process.kill()
+    server.process.wait()
+    left = [name for name in os.listdir(tmp_path) if name.endswith(".bin")]
+    assert len(left) > 0
+
+    server = hybrid()
+    server.checkpoint_path = str(tmp_path)
+    server.start()
+    assert not set(left) & set(os.listdir(tmp_path))
+    assert [name for name in os.listdir(tmp_path) if name.endswith(".lock")] != []
+
+    server.stop()
+    assert os.listdir(tmp_path) == []
+
+
 def test_splice_is_ignored_without_recurrent_state():
     global server
     server = ServerPreset.tinyllama2()

@@ -1432,6 +1432,9 @@ private:
         if (params_base.n_ctx_checkpoints > 0) {
             SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
                     params_base.n_ctx_checkpoints, params_base.checkpoint_min_step);
+            if (!params_base.checkpoint_path.empty()) {
+                common_checkpoint_dir_init(params_base.checkpoint_path);
+            }
         } else {
             SRV_TRC("%s", "context checkpoints disabled\n");
         }

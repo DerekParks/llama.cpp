@@ -55,6 +55,8 @@
 #endif
 
 #if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/types.h>
 #include <pwd.h>
 #endif
@@ -2287,15 +2289,83 @@ bool common_prompt_checkpoint::empty() const {
     return data_tgt.empty() && !file_tgt;
 }
 
+// names the checkpoint files of this process: llama-checkpoint-<id>-<n>.bin, claimed by llama-checkpoint-<id>.lock
+static const std::string & checkpoint_file_prefix() {
+    static const std::string prefix = string_format("llama-checkpoint-%08x", (unsigned) std::random_device{}());
+    return prefix;
+}
+
+#if defined(_WIN32)
+void common_checkpoint_dir_init(const std::string & /*dir*/) {
+}
+#else
+// holds the lock on this process's lock file until exit
+struct checkpoint_dir_claim {
+    std::string path;
+    int fd = -1;
+
+    ~checkpoint_dir_claim() {
+        if (fd >= 0) {
+            unlink(path.c_str());
+            close(fd);
+        }
+    }
+};
+
+void common_checkpoint_dir_init(const std::string & dir) {
+    static checkpoint_dir_claim claim;
+    static const std::string    suffix = ".lock";
+
+    std::error_code ec;
+    std::vector<std::filesystem::path> entries;
+    for (const auto & entry : std::filesystem::directory_iterator(dir, ec)) {
+        entries.push_back(entry.path());
+    }
+
+    // a lock file that can be locked belongs to a process that is gone
+    for (const auto & lock : entries) {
+        const auto name = lock.filename().string();
+        if (name.rfind("llama-checkpoint-", 0) != 0 || name.size() <= suffix.size() ||
+                name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            continue;
+        }
+
+        const int fd = open(lock.c_str(), O_RDWR);
+        if (fd < 0) {
+            continue;
+        }
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+            const auto owner = name.substr(0, name.size() - suffix.size()) + "-";
+            size_t n_removed = 0;
+            for (const auto & file : entries) {
+                if (file.filename().string().rfind(owner, 0) == 0 && std::filesystem::remove(file, ec)) {
+                    n_removed++;
+                }
+            }
+            std::filesystem::remove(lock, ec);
+            COM_INF("removed %zu checkpoint files left in '%s' by a process that no longer runs\n", n_removed, dir.c_str());
+        }
+        close(fd);
+    }
+
+    if (claim.fd < 0) {
+        claim.path = (std::filesystem::path(dir) / (checkpoint_file_prefix() + suffix)).string();
+        claim.fd   = open(claim.path.c_str(), O_RDWR | O_CREAT, 0644);
+        if (claim.fd < 0 || flock(claim.fd, LOCK_EX | LOCK_NB) != 0) {
+            COM_WRN("failed to claim '%s' for checkpoint files; they will not be removed after a crash\n", dir.c_str());
+        }
+    }
+}
+#endif
+
 bool common_prompt_checkpoint::offload_tgt(const std::string & dir) {
-    static const uint64_t        id_process = std::random_device{}();
     static std::atomic<uint64_t> n_files{0};
 
     if (data_tgt.empty()) {
         return false;
     }
 
-    const auto name = string_format("llama-checkpoint-%08" PRIx64 "-%" PRIu64 ".bin", id_process, n_files++);
+    const auto name = string_format("%s-%" PRIu64 ".bin", checkpoint_file_prefix().c_str(), n_files++);
     const auto path = (std::filesystem::path(dir) / name).string();
 
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
