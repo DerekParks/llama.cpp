@@ -14,6 +14,7 @@
 #include "unicode.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
 #include <climits>
 #include <cmath>
@@ -25,6 +26,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <random>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -2268,12 +2270,49 @@ bool common_prompt_batch_decode(
     return true;
 }
 
+common_temp_file::~common_temp_file() {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 size_t common_prompt_checkpoint::size() const {
+    return size_mem() + (file_tgt ? file_tgt->size : 0);
+}
+
+size_t common_prompt_checkpoint::size_mem() const {
     return data_tgt.size() + data_dft.size() + data_spec.size();
 }
 
 bool common_prompt_checkpoint::empty() const {
-    return data_tgt.empty();
+    return data_tgt.empty() && !file_tgt;
+}
+
+bool common_prompt_checkpoint::offload_tgt(const std::string & dir) {
+    static const uint64_t        id_process = std::random_device{}();
+    static std::atomic<uint64_t> n_files{0};
+
+    if (data_tgt.empty()) {
+        return false;
+    }
+
+    const auto name = string_format("llama-checkpoint-%08" PRIx64 "-%" PRIu64 ".bin", id_process, n_files++);
+    const auto path = (std::filesystem::path(dir) / name).string();
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write((const char *) data_tgt.data(), (std::streamsize) data_tgt.size());
+    file.close();
+
+    if (!file) {
+        COM_WRN("failed to write checkpoint data to '%s', keeping it in memory\n", path.c_str());
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        return false;
+    }
+
+    file_tgt = std::make_shared<common_temp_file>(path, data_tgt.size());
+    std::vector<uint8_t>().swap(data_tgt);
+
+    return true;
 }
 
 void common_prompt_checkpoint::clear() {
@@ -2285,6 +2324,7 @@ void common_prompt_checkpoint::clear() {
     data_tgt.clear();
     data_dft.clear();
     data_spec.clear();
+    file_tgt.reset();
 }
 
 void common_prompt_checkpoint::update_pos(
@@ -2306,6 +2346,7 @@ void common_prompt_checkpoint::update_tgt(
 
     const size_t ckpt_size = llama_state_seq_get_size_ext(ctx, seq_id, flags);
 
+    file_tgt.reset();
     data_tgt.resize(ckpt_size);
 
     const size_t n = llama_state_seq_get_data_ext(ctx, data_tgt.data(), ckpt_size, seq_id, flags);
@@ -2340,6 +2381,22 @@ void common_prompt_checkpoint::load_tgt(
         return;
     }
 
+    if (file_tgt) {
+        std::vector<uint8_t> data(file_tgt->size);
+
+        std::ifstream file(file_tgt->path, std::ios::binary);
+        file.read((char *) data.data(), (std::streamsize) data.size());
+        if (!file) {
+            GGML_ABORT("failed to read checkpoint data from '%s'\n", file_tgt->path.c_str());
+        }
+
+        const size_t n = llama_state_seq_set_data_ext(ctx, data.data(), data.size(), seq_id, flags);
+        if (n != data.size()) {
+            GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", data.size(), n);
+        }
+        return;
+    }
+
     if (data_tgt.empty()) {
         return;
     }
@@ -2370,6 +2427,7 @@ void common_prompt_checkpoint::load_dft(
 
 void common_prompt_checkpoint::clear_tgt() {
     data_tgt.clear();
+    file_tgt.reset();
 }
 
 void common_prompt_checkpoint::clear_dft() {

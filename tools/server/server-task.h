@@ -665,7 +665,7 @@ struct server_prompt_cache_state {
         size_t res = data.size();
 
         for (const auto & ckpt : prompt.checkpoints) {
-            res += ckpt.size();
+            res += ckpt.size_mem();
         }
 
         return res;

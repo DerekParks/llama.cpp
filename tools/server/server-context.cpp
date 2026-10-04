@@ -2499,6 +2499,9 @@ private:
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        if (!params_base.checkpoint_path.empty()) {
+            cur.offload_tgt(params_base.checkpoint_path);
+        }
         cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
         // stash the draft's speculative state with the checkpoint
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
@@ -4140,6 +4143,9 @@ private:
                             llama_memory_seq_pos_min(llama_get_memory(slot.ctx_tgt), slot.id),
                             llama_memory_seq_pos_max(llama_get_memory(slot.ctx_tgt), slot.id));
                     ckpt.update_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                    if (!params_base.checkpoint_path.empty()) {
+                        ckpt.offload_tgt(params_base.checkpoint_path);
+                    }
                 }
 
                 if (slot.can_speculate()) {

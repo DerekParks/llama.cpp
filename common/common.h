@@ -16,6 +16,7 @@
 #include <string_view>
 #include <vector>
 #include <map>
+#include <memory>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -636,6 +637,7 @@ struct common_params {
     int32_t n_ctx_checkpoints   = 32;    // max number of context checkpoints per slot
     int32_t kv_unified_per_slot = 0;     // max context per parallel slot; 0 = unset
     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
+    std::string checkpoint_path;         // directory to keep context checkpoint data in, instead of memory
     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
 
     std::string public_path   = "";                                                                         // NOLINT
@@ -1251,6 +1253,18 @@ enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
 // prompt utils
 //
 
+// a file that is removed when its last owner lets go of it
+struct common_temp_file {
+    std::string path;
+    size_t      size;
+
+    common_temp_file(std::string path, size_t size) : path(std::move(path)), size(size) {}
+    ~common_temp_file();
+
+    common_temp_file(const common_temp_file &) = delete;
+    common_temp_file & operator=(const common_temp_file &) = delete;
+};
+
 struct common_prompt_checkpoint {
     int64_t n_tokens;
 
@@ -1263,11 +1277,16 @@ struct common_prompt_checkpoint {
     std::vector<uint8_t> data_tgt;
     std::vector<uint8_t> data_dft;
 
+    // holds the target data instead of data_tgt after offload_tgt(); copies of the checkpoint share it
+    std::shared_ptr<common_temp_file> file_tgt;
+
     // (optional) speculative-decoding implementation state stashed with the checkpoint
     // (e.g. eagle3's deferred-boundary g_embd row)
     std::vector<uint8_t> data_spec;
 
+    // all checkpoint data, and the part of it held in memory
     size_t size() const;
+    size_t size_mem() const;
 
     bool empty() const;
     void clear();
@@ -1296,6 +1315,9 @@ struct common_prompt_checkpoint {
             llama_context * ctx,
             llama_seq_id seq_id,
             llama_state_seq_flags flags) const;
+
+    // move the target data from memory to a new file in `dir`; it stays in memory if the file cannot be written
+    bool offload_tgt(const std::string & dir);
 
     void clear_tgt();
     void clear_dft();
