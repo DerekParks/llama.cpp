@@ -388,6 +388,9 @@ constexpr int32_t SERVER_SPLICE_N_TAIL = 16;
 // shortest part of a matching run worth moving
 constexpr int32_t SERVER_SPLICE_N_MIN = 64;
 
+// shortest common prefix after which runs are moved; an edit this early changes what everything after it means
+constexpr size_t SERVER_SPLICE_N_COMMON_MIN = 1024;
+
 // the longest `n_max` runs shared by both prompts after their common prefix `n_common`,
 // in prompt order, each without its tail; a run keeps the order it has in both prompts
 std::vector<server_splice_span> server_splice_plan(

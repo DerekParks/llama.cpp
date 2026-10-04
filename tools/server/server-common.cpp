@@ -93,7 +93,7 @@ std::vector<server_splice_span> server_splice_plan(
 
     std::vector<server_splice_span> res;
 
-    if (n_max <= 0 || cached.size() < n_common + n_min || prompt.size() < n_common + n_min) {
+    if (n_max <= 0 || n_common < SERVER_SPLICE_N_COMMON_MIN || cached.size() < n_common + n_min || prompt.size() < n_common + n_min) {
         return res;
     }
 

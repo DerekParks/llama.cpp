@@ -3620,7 +3620,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--cache-splice"}, "N",
         string_format(
             "max number of cached spans to keep after an edit in the middle of the prompt, by moving them to their new place "
-            "instead of processing them again; their content is not updated for the edit, requires prompt caching to be enabled (default: %d, 0 = disabled)",
+            "instead of processing them again; their content is not updated for the edit, and edits in the first 1024 tokens are processed in full; "
+            "requires prompt caching to be enabled (default: %d, 0 = disabled)",
             params.n_cache_splice
         ),
         [](common_params & params, int value) {

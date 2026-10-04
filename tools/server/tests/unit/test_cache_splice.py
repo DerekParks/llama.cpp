@@ -79,6 +79,15 @@ def test_edit_keeps_the_span_after_it():
 
 
 @pytest.mark.slow
+def test_edit_near_the_start_is_processed_in_full():
+    server.start()
+    head = lines("north", 20)
+    complete(prompt(OLD_NOTE, head))
+    edited = complete(prompt(NEW_NOTE, head))
+    assert edited["splice_n"] == 0
+
+
+@pytest.mark.slow
 def test_request_can_turn_splice_off():
     server.start()
     complete(OLD)
