@@ -616,6 +616,9 @@ struct server_prompt {
     std::vector<server_splice_span> splice;
     size_t                          splice_next = 0;
 
+    // where the current prompt leaves the previously cached one, when processing had to restart before it; -1 if none
+    int32_t n_branch = -1;
+
     bool has_splice() const {
         return splice_next < splice.size();
     }
@@ -626,6 +629,7 @@ struct server_prompt {
         ckpt_prompt_end.clear();
         splice.clear();
         splice_next = 0;
+        n_branch = -1;
     }
 
     int n_tokens() const {
@@ -639,6 +643,7 @@ struct server_prompt {
             ckpt_prompt_end,
             {},
             0,
+            -1,
         };
     }
 };

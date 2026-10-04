@@ -3577,6 +3577,9 @@ private:
                         slot.prompt.splice.clear();
                         slot.prompt.splice_next = 0;
 
+                        // a checkpoint there lets the next edit at the same place keep the whole shared prefix
+                        slot.prompt.n_branch = n_common > n_past && n_common < slot.task->n_tokens() ? n_common : -1;
+
                         // keep cached spans that the new prompt has further along, moved to their new place
                         {
                             const auto n_cache_splice = slot.task->params.n_cache_splice;
@@ -3747,6 +3750,12 @@ private:
                     const auto & spans = slot.task->params.message_spans;
                     const auto last_user_pos = spans.last_user_message_pos();
 
+                    // whether a batch starting at n_tokens is at least min step past the last checkpoint
+                    const auto is_past_min_step = [&](int64_t n_tokens) {
+                        const auto & checkpoints = slot.prompt.checkpoints;
+                        return n_tokens > (checkpoints.empty() ? 0 : checkpoints.back().n_tokens) + params_base.checkpoint_min_step;
+                    };
+
                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
 
                     // skip over a cached span that starts here; everything before it has been decoded by now
@@ -3817,6 +3826,11 @@ private:
                         }
                         slot.prompt.tokens.push_back(cur_tok);
 
+                        // break where the prompt leaves the cached one, and every min step in a long stretch without a checkpoint
+                        if (do_checkpoint && (slot.prompt.n_tokens() == slot.prompt.n_branch || is_past_min_step(slot.prompt.n_tokens()))) {
+                            break;
+                        }
+
                         // break at the last user message, or at user messages at least min step past the last checkpoint
                         if (do_checkpoint && spans.is_user_start(slot.prompt.n_tokens())) {
                             const auto pos = slot.prompt.n_tokens();
@@ -3858,6 +3872,7 @@ private:
 
                     const bool is_user_start = spans.is_user_start(n_tokens_start);
                     const bool is_last_user_message = n_tokens_start == last_user_pos;
+                    const bool is_branch = n_tokens_start == slot.prompt.n_branch;
 
                     // entire prompt has been processed
                     if (slot.prompt.n_tokens() == slot.task->n_tokens()) {
@@ -3873,9 +3888,10 @@ private:
 
                         slot.init_sampler();
                     } else {
-                        // skip ordinary mid-prompt checkpoints, unless the batch starts a user
-                        // message or we are near the end of the prompt
-                        if (!is_user_start && !near_prompt_end) {
+                        // skip ordinary mid-prompt checkpoints, unless the batch starts a user message,
+                        // starts where the prompt leaves the cached one, is min step past the last
+                        // checkpoint, or we are near the end of the prompt
+                        if (!is_user_start && !is_branch && !is_past_min_step(n_tokens_start) && !near_prompt_end) {
                             do_checkpoint = false;
                         }
                     }
@@ -3895,7 +3911,7 @@ private:
                     // no need to create checkpoints that are too close together, unless it's the last user message
                     do_checkpoint = do_checkpoint && (
                             slot.prompt.checkpoints.empty() ||
-                            is_last_user_message || near_prompt_end ||
+                            is_last_user_message || near_prompt_end || is_branch ||
                             n_tokens_start > slot.prompt.checkpoints.back().n_tokens + params_base.checkpoint_min_step);
                     SLT_DBG(slot, "main/do_checkpoint = %s, pos_min = %d, pos_max = %d\n", do_checkpoint ? "yes" : "no", pos_min, pos_max);
 
