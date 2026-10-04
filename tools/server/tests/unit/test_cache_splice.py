@@ -1,0 +1,138 @@
+import os
+
+import pytest
+from utils import *
+
+server: ServerProcess
+
+
+def lines(tag: str, n: int) -> str:
+    return "\n".join(f"{tag} entry {i}: station {i * 37 % 101} reported level {i * 53 % 997}." for i in range(n))
+
+
+HEAD = lines("north", 60)
+TAIL = lines("south", 40)
+QUESTION = "\nSummarise the log in one word:"
+
+
+def prompt(note: str, head: str = HEAD, tail: str = TAIL) -> str:
+    return f"{head}\n{note}\n{tail}{QUESTION}"
+
+
+OLD_NOTE = "NOTE: the valve code is 4821."
+NEW_NOTE = "NOTE: the valve code was changed this morning and is now 7754, tell the crew."
+OLD = prompt(OLD_NOTE)
+NEW = prompt(NEW_NOTE)
+
+
+def hybrid() -> ServerProcess:
+    # a model with attention and recurrent layers, the only kind a splice applies to
+    server = ServerProcess()
+    server.model_hf_repo = "unsloth/Qwen3.5-0.8B-GGUF"
+    server.model_hf_file = "Qwen3.5-0.8B-Q4_K_M.gguf"
+    # a loaded multimodal projector turns the splice off
+    server.no_mmproj = True
+    server.n_ctx = 8192
+    server.n_slots = 1
+    server.cache_ram = 0
+    server.cache_splice = 6
+    server.checkpoint_min_step = 64
+    server.ctx_checkpoints = 64
+    return server
+
+
+def complete(text: str, **params) -> dict:
+    res = server.make_request("POST", "/completion", data={
+        "prompt": text,
+        "n_predict": 4,
+        "temperature": 0.0,
+        "cache_prompt": True,
+        "id_slot": 0,
+        **params,
+    })
+    assert res.status_code == 200
+    return res.body["timings"]
+
+
+def n_tokens(text: str) -> int:
+    res = server.make_request("POST", "/tokenize", data={"content": text, "add_special": True})
+    assert res.status_code == 200
+    return len(res.body["tokens"])
+
+
+@pytest.fixture(autouse=True)
+def create_server():
+    global server
+    server = hybrid()
+
+
+@pytest.mark.slow
+def test_edit_keeps_the_span_after_it():
+    server.start()
+    first = complete(OLD)
+    assert first["splice_n"] == 0
+
+    edited = complete(NEW)
+    assert edited["splice_n"] > n_tokens(TAIL) // 2
+    assert edited["cache_n"] + edited["splice_n"] + edited["prompt_n"] == n_tokens(NEW)
+    assert edited["prompt_n"] < first["prompt_n"] // 4
+
+
+@pytest.mark.slow
+def test_request_can_turn_splice_off():
+    server.start()
+    complete(OLD)
+    edited = complete(NEW, n_cache_splice=0)
+    assert edited["splice_n"] == 0
+    assert edited["cache_n"] + edited["prompt_n"] == n_tokens(NEW)
+
+
+@pytest.mark.slow
+def test_checkpoints_keep_the_prefix_before_an_edit():
+    server.cache_splice = 0
+    server.start()
+    complete(OLD)
+    edited = complete(NEW)
+    # the edit follows HEAD, and a checkpoint lies at most min step before it
+    assert n_tokens(HEAD) - 2 * 64 < edited["cache_n"] < n_tokens(HEAD)
+    assert edited["splice_n"] == 0
+
+    # the checkpoint taken where the prompts diverged keeps the whole shared prefix next time
+    again = complete(prompt("NOTE: the valve code will change tomorrow."))
+    assert again["cache_n"] >= n_tokens(HEAD)
+
+
+@pytest.mark.slow
+def test_checkpoints_on_disk_behave_like_checkpoints_in_memory(tmp_path):
+    global server
+    server.start()
+    complete(OLD)
+    in_memory = complete(NEW)
+    server.stop()
+
+    server = hybrid()
+    server.checkpoint_path = str(tmp_path)
+    server.start()
+    complete(OLD)
+    assert len(os.listdir(tmp_path)) > 0
+    on_disk = complete(NEW)
+    for key in ("cache_n", "splice_n", "prompt_n"):
+        assert on_disk[key] == in_memory[key]
+
+    server.stop()
+    assert os.listdir(tmp_path) == []
+
+
+def test_splice_is_ignored_without_recurrent_state():
+    global server
+    server = ServerPreset.tinyllama2()
+    server.n_ctx = 2048
+    server.n_slots = 1
+    server.cache_splice = 6
+    server.start()
+    old = prompt(OLD_NOTE, lines("north", 8), lines("south", 12))
+    new = prompt(NEW_NOTE, lines("north", 8), lines("south", 12))
+    complete(old)
+    edited = complete(new)
+    assert edited["splice_n"] == 0
+    assert edited["cache_n"] + edited["prompt_n"] == n_tokens(new)

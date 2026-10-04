@@ -3759,6 +3759,10 @@ private:
                         return n_tokens > (checkpoints.empty() ? 0 : checkpoints.back().n_tokens) + params_base.checkpoint_min_step;
                     };
 
+                    // this batch gets a checkpoint of its own if it starts min step past the last one
+                    const int64_t n_batch_start      = slot.prompt.n_tokens();
+                    const bool    is_batch_past_step = is_past_min_step(n_batch_start);
+
                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
 
                     // skip over a cached span that starts here; everything before it has been decoded by now
@@ -3830,7 +3834,11 @@ private:
                         slot.prompt.tokens.push_back(cur_tok);
 
                         // break where the prompt leaves the cached one, and every min step in a long stretch without a checkpoint
-                        if (do_checkpoint && (slot.prompt.n_tokens() == slot.prompt.n_branch || is_past_min_step(slot.prompt.n_tokens()))) {
+                        if (do_checkpoint && (
+                                    slot.prompt.n_tokens() == slot.prompt.n_branch ||
+                                    (is_batch_past_step
+                                        ? slot.prompt.n_tokens() > n_batch_start + params_base.checkpoint_min_step
+                                        : is_past_min_step(slot.prompt.n_tokens())))) {
                             break;
                         }
 
