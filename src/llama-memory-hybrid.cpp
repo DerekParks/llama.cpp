@@ -164,6 +164,14 @@ void llama_memory_hybrid::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p
     mem_recr->seq_add(seq_id, p0, p1, shift);
 }
 
+bool llama_memory_hybrid::seq_splice(llama_seq_id seq_id, llama_pos p_keep, const llama_memory_span * spans, size_t n_spans) {
+    return mem_attn->seq_splice(seq_id, p_keep, spans, n_spans);
+}
+
+bool llama_memory_hybrid::seq_rs_pos_set(llama_seq_id seq_id, llama_pos pos) {
+    return mem_recr->seq_rs_pos_set(seq_id, pos);
+}
+
 void llama_memory_hybrid::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
     mem_attn->seq_div(seq_id, p0, p1, d);
     mem_recr->seq_div(seq_id, p0, p1, d);

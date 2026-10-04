@@ -357,6 +357,21 @@ void llama_memory_recurrent::seq_add(llama_seq_id seq_id, llama_pos p0, llama_po
     }
 }
 
+bool llama_memory_recurrent::seq_rs_pos_set(llama_seq_id seq_id, llama_pos pos) {
+    if (seq_id < 0 || seq_id >= (int64_t) size || pos < 0) {
+        return false;
+    }
+
+    const int32_t tail_id = cells[seq_id].tail;
+    if (tail_id < 0 || !cells[tail_id].has_seq_id(seq_id)) {
+        return false;
+    }
+
+    cells[tail_id].pos = pos;
+
+    return true;
+}
+
 void llama_memory_recurrent::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
     if (d == 1) {
         return;

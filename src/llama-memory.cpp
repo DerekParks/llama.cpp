@@ -57,3 +57,11 @@ bool llama_memory_status_is_fail(llama_memory_status status) {
 
     return false;
 }
+
+bool llama_memory_i::seq_splice(llama_seq_id /*seq_id*/, llama_pos /*p_keep*/, const llama_memory_span * /*spans*/, size_t /*n_spans*/) {
+    return false;
+}
+
+bool llama_memory_i::seq_rs_pos_set(llama_seq_id /*seq_id*/, llama_pos /*pos*/) {
+    return false;
+}

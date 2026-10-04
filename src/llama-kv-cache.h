@@ -133,6 +133,9 @@ public:
 
     bool get_can_shift() const override;
 
+    // whether cells that hold text tokens can be moved, which also holds for multi-axis RoPE
+    bool get_can_shift_text() const;
+
     void clear(bool data) override;
 
     bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
@@ -140,6 +143,8 @@ public:
     void seq_keep(llama_seq_id seq_id)                                                          override;
     void seq_add (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, llama_pos shift) override;
     void seq_div (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, int d) override;
+
+    bool seq_splice(llama_seq_id seq_id, llama_pos p_keep, const llama_memory_span * spans, size_t n_spans) override;
 
     llama_pos seq_pos_min(llama_seq_id seq_id) const override;
     llama_pos seq_pos_max(llama_seq_id seq_id) const override;

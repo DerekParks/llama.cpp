@@ -789,6 +789,31 @@ extern "C" {
                  llama_pos p1,
                  llama_pos delta);
 
+    // A range of positions [p0, p1) and the amount to move it by
+    typedef struct llama_memory_span {
+        llama_pos p0;
+        llama_pos p1;
+        llama_pos shift;
+    } llama_memory_span;
+
+    // Keeps the tokens of the sequence with positions in [0, p_keep) and in the given spans, moving each span by its shift,
+    // and removes the rest. Spans must be ordered and must not overlap, before or after moving.
+    // Only per-token memory (the KV cache) changes; recurrent state is left as it is.
+    // Returns false, changing nothing, if the memory does not support it or the spans are invalid
+    LLAMA_API bool llama_memory_seq_splice(
+            llama_memory_t mem,
+              llama_seq_id seq_id,
+                 llama_pos p_keep,
+  const llama_memory_span * spans,
+                    size_t n_spans);
+
+    // Sets the position of the sequence's recurrent state
+    // Returns false if the memory has no recurrent state for the sequence
+    LLAMA_API bool llama_memory_seq_rs_pos_set(
+            llama_memory_t mem,
+              llama_seq_id seq_id,
+                 llama_pos pos);
+
     // Integer division of the positions by factor of `d > 1`
     // p0 < 0 : [0,  p1]
     // p1 < 0 : [p0, inf)

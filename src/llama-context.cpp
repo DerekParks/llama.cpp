@@ -4216,6 +4216,30 @@ void llama_memory_seq_add(
     mem->seq_add(seq_id, p0, p1, delta);
 }
 
+bool llama_memory_seq_splice(
+        llama_memory_t mem,
+          llama_seq_id seq_id,
+             llama_pos p_keep,
+const llama_memory_span * spans,
+                size_t n_spans) {
+    if (!mem) {
+        return false;
+    }
+
+    return mem->seq_splice(seq_id, p_keep, spans, n_spans);
+}
+
+bool llama_memory_seq_rs_pos_set(
+        llama_memory_t mem,
+          llama_seq_id seq_id,
+             llama_pos pos) {
+    if (!mem) {
+        return false;
+    }
+
+    return mem->seq_rs_pos_set(seq_id, pos);
+}
+
 void llama_memory_seq_div(
         llama_memory_t mem,
           llama_seq_id seq_id,

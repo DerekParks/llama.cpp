@@ -617,6 +617,79 @@ void llama_kv_cache::seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, ll
     head = new_head != cells.size() ? new_head : 0;
 }
 
+bool llama_kv_cache::seq_splice(llama_seq_id seq_id, llama_pos p_keep, const llama_memory_span * spans, size_t n_spans) {
+    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+    if (other || !get_can_shift_text()) {
+        return false;
+    }
+
+    if (seq_id < 0 || (size_t) seq_id >= seq_to_stream.size() || p_keep < 0) {
+        return false;
+    }
+
+    llama_pos end_old = p_keep;
+    llama_pos end_new = p_keep;
+    for (size_t s = 0; s < n_spans; ++s) {
+        const auto & span = spans[s];
+        if (span.p0 >= span.p1 || span.p0 < end_old || span.p0 + span.shift < end_new) {
+            return false;
+        }
+        end_old = span.p1;
+        end_new = span.p1 + span.shift;
+    }
+
+    auto & cells = v_cells[seq_to_stream[seq_id]];
+    auto & head  = v_heads[seq_to_stream[seq_id]];
+
+    const auto find_span = [&](llama_pos pos) -> const llama_memory_span * {
+        for (size_t s = 0; s < n_spans; ++s) {
+            if (spans[s].p0 <= pos && pos < spans[s].p1) {
+                return &spans[s];
+            }
+        }
+        return nullptr;
+    };
+
+    // a moved cell must belong to this sequence alone and hold a text token: its 2D position is not moved
+    for (uint32_t i = 0; i < cells.size(); ++i) {
+        if (cells.is_empty(i) || !cells.seq_has(i, seq_id) || cells.pos_get(i) < p_keep) {
+            continue;
+        }
+        const auto * span = find_span(cells.pos_get(i));
+        if (!span || span->shift == 0) {
+            continue;
+        }
+        if (cells.seq_count(i) != 1) {
+            return false;
+        }
+        if (hparams.n_pos_per_embd() > 1 && cells.ext_get(i).tok == LLAMA_TOKEN_NULL) {
+            return false;
+        }
+    }
+
+    uint32_t new_head = cells.size();
+
+    for (uint32_t i = 0; i < cells.size(); ++i) {
+        if (cells.is_empty(i) || !cells.seq_has(i, seq_id) || cells.pos_get(i) < p_keep) {
+            continue;
+        }
+        const auto * span = find_span(cells.pos_get(i));
+        if (!span) {
+            if (cells.seq_rm(i, seq_id) && new_head == cells.size()) {
+                new_head = i;
+            }
+        } else if (span->shift != 0) {
+            cells.pos_add(i, span->shift);
+        }
+    }
+
+    if (new_head != cells.size() && new_head < head) {
+        head = new_head;
+    }
+
+    return true;
+}
+
 void llama_kv_cache::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
     // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
     if (other) {
@@ -855,7 +928,7 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
     }
 
     if (do_shift) {
-        if (!get_can_shift()) {
+        if (!get_can_shift_text()) {
             GGML_ABORT("The current KV cache / model configuration does not support K-shift");
         }
 
@@ -1194,6 +1267,11 @@ bool llama_kv_cache::get_can_shift() const {
         return false;
     }
     return true;
+}
+
+bool llama_kv_cache::get_can_shift_text() const {
+    // Step35 uses per-layer RoPE dims; K-shift assumes a single global n_rot.
+    return model.arch != LLM_ARCH_STEP35;
 }
 
 uint32_t llama_kv_cache::get_size() const {

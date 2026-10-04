@@ -66,6 +66,9 @@ public:
     void seq_add (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, llama_pos shift) override;
     void seq_div (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, int d) override;
 
+    bool seq_splice    (llama_seq_id seq_id, llama_pos p_keep, const llama_memory_span * spans, size_t n_spans) override;
+    bool seq_rs_pos_set(llama_seq_id seq_id, llama_pos pos) override;
+
     llama_pos seq_pos_min(llama_seq_id seq_id) const override;
     llama_pos seq_pos_max(llama_seq_id seq_id) const override;
 
